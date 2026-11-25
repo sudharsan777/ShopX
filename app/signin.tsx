@@ -1,20 +1,74 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   StyleSheet,
   View,
   TouchableOpacity,
   Text,
-  ScrollView,
+  ScrollView, ActivityIndicator
 } from 'react-native';
 
-import { Link, router, Stack, Href } from 'expo-router';
+import { Link, router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-
+import axios from 'axios';
 import { Colors } from '@/constants/Colors';
 import Inputfeild from './components/inputfeild';
 import SocialLoginButton from './components/Auth/SocialLoginButton';
+import { loginUser } from '../app/service/authService'
 
 const Signin = () => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  // LOGIN FUNCTION
+  const handleLogin = async () => {
+    setErrorMessage('');
+
+    if (!email.trim() || !password) {
+      setErrorMessage('Please enter your email and password.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const response = await loginUser({
+        username: email.trim().toLowerCase(),
+        password: password,
+      });
+
+      console.log('LOGIN SUCCESSFUL');
+
+      // Navigate only after successful login
+      router.replace('/(tabs)');
+
+    } catch (error: unknown) {
+      console.log('LOGIN ERROR:', error);
+
+      if (axios.isAxiosError(error)) {
+        const data = error.response?.data;
+
+        const message =
+          data?.detail ||
+          data?.message ||
+          'Invalid email or password. Please try again.';
+
+        setErrorMessage(
+          typeof message === 'string'
+            ? message
+            : 'Invalid login credentials.',
+        );
+      } else {
+        setErrorMessage('Something went wrong. Please try again.');
+      }
+
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
       <Stack.Screen
@@ -36,43 +90,62 @@ const Signin = () => {
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Login Form */}
         <View style={styles.form}>
           <Text style={styles.title}>Login Your Account</Text>
 
           <Inputfeild
             placeholder="Email address"
             placeholderTextColor={Colors.gray}
+            value={email}
+            onChangeText={setEmail}
             autoCapitalize="none"
+            autoCorrect={false}
             keyboardType="email-address"
           />
 
           <Inputfeild
             placeholder="Password"
             placeholderTextColor={Colors.gray}
+            value={password}
+            onChangeText={setPassword}
             autoCapitalize="none"
             secureTextEntry
           />
 
+          {errorMessage ? (
+            <Text style={styles.errorText}>
+              {errorMessage}
+            </Text>
+          ) : null}
+
           <Link href="/(tabs)" asChild>
             <TouchableOpacity style={styles.forgotPassword}>
-              <Text style={styles.forgotText}>Forgot Password?</Text>
+              <Text style={styles.forgotText}>
+                Forgot Password?
+              </Text>
             </TouchableOpacity>
           </Link>
 
-          <Link href="/(tabs)" asChild>
-            <TouchableOpacity style={styles.btntext}>
+          <TouchableOpacity
+            style={[
+              styles.btntext,
+              loading && styles.disabledButton,
+            ]}
+            onPress={handleLogin}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color={Colors.white} />
+            ) : (
               <Text style={styles.btntext1}>Login</Text>
-            </TouchableOpacity>
-          </Link>
+            )}
+          </TouchableOpacity>
         </View>
 
-
-        {/* Social Login */}
         <View style={styles.socialContainer}>
           <SocialLoginButton emailHref="/signup" />
         </View>
-      </ScrollView >
+      </ScrollView>
     </>
   );
 };
@@ -125,6 +198,17 @@ const styles = StyleSheet.create({
   btntext1: {
     color: Colors.white,
     fontWeight: '600',
+  },
+
+  disabledButton: {
+    opacity: 0.6,
+  },
+
+  errorText: {
+    color: 'red',
+    fontSize: 13,
+    marginTop: 12,
+    alignSelf: 'flex-start',
   },
 
   socialContainer: {
