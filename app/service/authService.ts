@@ -4,9 +4,12 @@ import API_ENDPOINTS from '../../constants/apiEndpoints';
 import { tokenStorage } from './tokenStorage';
 
 import type {
+    LoginRequest,
+    LoginResponse,
     RegisterRequest,
-    RegisterResponse, LoginRequest, LoginResponse
-} from '../../types/auth.types'
+    RegisterResponse,
+    UserProfile,
+} from '../../types/auth.types';
 
 // REGISTER API
 export const registerUser = async (
@@ -33,6 +36,15 @@ export const loginUser = async (
 
     // Save JWT tokens securely
     await tokenStorage.saveTokens(data.access, data.refresh);
+
+    return data;
+};
+
+export const getUserProfile = async (accessToken: string, signal: AbortSignal): Promise<UserProfile> => {
+    const { data } = await apiClient.get<UserProfile>(API_ENDPOINTS.AUTH.PROFILE, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal,
+    });
 
     return data;
 };

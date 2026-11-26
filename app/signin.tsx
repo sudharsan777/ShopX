@@ -10,12 +10,14 @@ import {
 import { Link, router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { useSession } from '@/components/auth/SessionProvider';
 import { Colors } from '@/constants/Colors';
 import Inputfeild from './components/inputfeild';
 import SocialLoginButton from './components/Auth/SocialLoginButton';
 import { loginUser } from '../app/service/authService'
 
 const Signin = () => {
+  const { setAccessToken, restoring } = useSession();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -39,9 +41,7 @@ const Signin = () => {
         password: password,
       });
 
-      console.log('LOGIN SUCCESSFUL');
-
-      // Navigate only after successful login
+      setAccessToken(response.access);
       router.replace('/(tabs)');
 
     } catch (error: unknown) {
@@ -132,7 +132,7 @@ const Signin = () => {
               loading && styles.disabledButton,
             ]}
             onPress={handleLogin}
-            disabled={loading}
+            disabled={loading || restoring}
           >
             {loading ? (
               <ActivityIndicator color={Colors.white} />

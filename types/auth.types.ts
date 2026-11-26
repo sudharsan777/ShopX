@@ -19,3 +19,7 @@ export interface LoginResponse {
     access: string;
     refresh: string;
 }
+export interface UserProfile {
+    username: string;
+    email?: string;
+}

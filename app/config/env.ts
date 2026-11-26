@@ -6,4 +6,5 @@ if (!API_BASE_URL) {
 
 export const env = {
     API_BASE_URL,
+    PRODUCTS_API_URL: process.env.EXPO_PUBLIC_PRODUCTS_API_URL,
 } as const;

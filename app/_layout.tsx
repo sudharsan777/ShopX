@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
+import { SessionProvider } from '@/components/auth/SessionProvider';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
@@ -23,10 +24,12 @@ export default function RootLayout() {
   }
 
   return (
-    <Stack>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="signin" options={{ presentation: 'modal' }} />
-      <Stack.Screen name="signup" options={{ headerShown: false, presentation: 'modal' }} />
-    </Stack>
+    <SessionProvider>
+      <Stack>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="signin" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="signup" options={{ headerShown: false, presentation: 'modal' }} />
+      </Stack>
+    </SessionProvider>
   );
 }
