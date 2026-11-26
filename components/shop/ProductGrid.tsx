@@ -1,12 +1,13 @@
 import React, { type ReactElement } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Colors } from '@/constants/Colors';
 import type { CatalogProduct } from '@/types/catalog.types';
 import { useCatalog } from './CatalogProvider';
-import { useCart } from './CartProvider';
+import { stockLimit, useCart } from './CartProvider';
 import ProductImage from './ProductImage';
 import { priceFormatter, shopStyles } from './shopStyles';
 
@@ -14,12 +15,14 @@ type ProductGridProps = {
   header: ReactElement;
   products: CatalogProduct[];
   emptyMessage?: string;
+  stickyHeader?: boolean;
 };
 
 export default function ProductGrid({
-  header,
+   header,
   products,
   emptyMessage = 'No products available yet',
+  stickyHeader = false
 }: ProductGridProps) {
   const { requestState, loadProducts } = useCatalog();
   const { lines, add } = useCart();
@@ -48,21 +51,29 @@ export default function ProductGrid({
         data={products}
         numColumns={2}
         keyExtractor={product => String(product.id)}
+        stickyHeaderIndices={stickyHeader ? [0] : undefined}
         keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => {
           const quantity = quantities.get(item.id) ?? 0;
+          const limit = stockLimit(item);
 
           return (
             <View style={styles.cell}>
               <View style={[shopStyles.surface, styles.card]}>
-                <ProductImage uri={item.image_url} />
+                <Pressable accessibilityRole="button" accessibilityLabel={`View ${item.name} details`}
+                  onPress={() => router.push({ pathname: '/product/[id]', params: { id: String(item.id) } })}>
+                  <ProductImage uri={item.image_url} />
+                  <View style={styles.details}>
+                    <Text style={styles.name} numberOfLines={2}>{item.name}</Text>
+                    <Text style={styles.price}>{priceFormatter.format(item.price)}</Text>
+                  </View>
+                </Pressable>
                 <View style={styles.details}>
-                  <Text style={styles.name} numberOfLines={2}>{item.name}</Text>
-                  <Text style={styles.price}>{priceFormatter.format(item.price)}</Text>
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`Add ${item.name} to cart`}
                     accessibilityHint={quantity ? `${quantity} already in cart` : undefined}
+                    disabled={quantity >= limit}
                     onPress={() => add(item)}
                     style={({ pressed }) => [
                       shopStyles.button,
@@ -72,7 +83,7 @@ export default function ProductGrid({
                     ]}
                   >
                     <Ionicons name={quantity ? 'checkmark' : 'add'} size={17} color={Colors.black} />
-                    <Text style={styles.addText}>{quantity ? `In cart · ${quantity}` : 'Add to cart'}</Text>
+                    <Text style={styles.addText}>{limit === 0 ? 'Out of stock' : quantity ? `In cart · ${quantity}` : 'Add to cart'}</Text>
                   </Pressable>
                 </View>
               </View>
@@ -81,12 +92,24 @@ export default function ProductGrid({
         }}
         refreshing={requestState === 'refreshing'}
         onRefresh={() => void loadProducts(true)}
-        ListHeaderComponent={
-          <View>
-            <View style={styles.header}>{header}</View>
-            {requestState === 'error' && products.length > 0 ? errorNotice : null}
-          </View>
-        }
+       ListHeaderComponent={
+  <View
+    style={
+      stickyHeader
+        ? styles.stickyHeader
+        : undefined
+    }
+  >
+    <View style={styles.header}>
+      {header}
+    </View>
+
+    {requestState === 'error' &&
+    products.length > 0
+      ? errorNotice
+      : null}
+  </View>
+}
         ListEmptyComponent={
           requestState === 'error' ? errorNotice : (
             <View style={[shopStyles.surface, styles.notice]}>
@@ -120,5 +143,9 @@ const styles = StyleSheet.create({
   addedButton: { backgroundColor: '#e9e5f7' },
   addText: { flexShrink: 1, color: Colors.black, fontSize: 13, fontWeight: '700', textAlign: 'center' },
   notice: { alignItems: 'center', padding: 24, marginHorizontal: 6, marginBottom: 12, gap: 8 },
-  noticeTitle: { color: Colors.black, fontSize: 16, fontWeight: '600', textAlign: 'center' },
+  noticeTitle: { color: Colors.black, fontSize: 16, fontWeight: '600', textAlign: 'center' },stickyHeader: {
+  backgroundColor: Colors.background,
+  zIndex: 10,
+  elevation: 2,
+},
 });

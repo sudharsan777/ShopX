@@ -3,6 +3,7 @@ import {
   ActivityIndicator, AppState, Image, Linking, PermissionsAndroid, Platform,
   Pressable, ScrollView, StyleSheet, Text, View, type ViewProps,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -12,7 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useCatalog } from '@/components/shop/CatalogProvider';
 import ProductImage from '@/components/shop/ProductImage';
-import { bracelet, modes, supportsTryOn, type Mode } from '@/components/try-on/catalog';
+import { bracelets, modes, supportsTryOn, type Mode } from '@/components/try-on/catalog';
 
 type CameraStatus = 'starting' | 'searching' | 'tracking' | 'cameraError' | 'noCamera' | 'modelError' | 'permission';
 type Cameras = { front: boolean; rear: boolean };
@@ -30,6 +31,7 @@ const permission = PermissionsAndroid.PERMISSIONS.CAMERA;
 
 export default function TryOnScreen() {
   const { products, requestState, loadProducts } = useCatalog();
+  const { productId } = useLocalSearchParams<{ productId?: string }>();
   const focused = useIsFocused();
   const { top } = useSafeAreaInsets();
   const [mode, setMode] = useState<Mode>('earrings');
@@ -43,7 +45,7 @@ export default function TryOnScreen() {
   const [status, setStatus] = useState<CameraStatus>('starting');
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const [attempt, setAttempt] = useState(0);
-  const available = mode === 'bracelet' ? [bracelet] : products.filter(item => supportsTryOn(item, mode));
+  const available = mode === 'bracelet' ? bracelets : products.filter(item => supportsTryOn(item, mode));
   const product = available.find(item => item.id === chosenId) ?? available[0];
   const active = focused && appActive;
   const useFront = cameras?.front && cameras?.rear ? front : Boolean(cameras?.front);
@@ -70,6 +72,17 @@ export default function TryOnScreen() {
       .catch(() => { if (current) setCameras({ front: false, rear: false }); });
     return () => { current = false; };
   }, [active]);
+
+  useEffect(() => {
+    if (!focused || !productId) return;
+    const item = products.find(candidate => String(candidate.id) === productId);
+    const match = item && modes.find(candidate => supportsTryOn(item, candidate.id));
+    if (!item || !match) return;
+    setChosenId(item.id);
+    setMode(match.id);
+    setFront(match.id !== 'ring' && match.id !== 'bracelet');
+    setStatus('starting');
+  }, [focused, productId, products]);
 
   const askPermission = async () => {
     setRequesting(true);

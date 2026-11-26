@@ -25,8 +25,8 @@ export function supportsTryOn(product: CatalogProduct, mode: Mode) {
 }
 
 // This standalone model has no ShopAPI product ID.
-export const bracelet = {
-  id: -1,
-  name: 'Gold oval bracelet',
-  thumbnail: require('../../assets/try-on/gold-oval-bracelet.png'),
-};
+export const bracelets = [
+  { id: -1, name: 'Gold oval bracelet', thumbnail: require('../../assets/try-on/gold-oval-bracelet.png') },
+  { id: -2, name: 'Silver filigree bracelet', thumbnail: require('../../assets/try-on/silver-filigree-bracelet.png') },
+  { id: -3, name: 'Emerald vine gold bracelet', thumbnail: require('../../assets/try-on/emerald-vine-gold-bracelet.png') },
+];

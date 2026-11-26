@@ -5,6 +5,15 @@ export interface CatalogProduct {
   category: string;
   readonly category_slug: string;
   price: number;
+  currency?: string;
+  images?: (string | { image_url: string })[];
+  original_price?: number;
+  discount_percentage?: number;
+  stock?: number;
+  in_stock?: boolean;
+  gold_purity?: string;
+  weight?: string | number;
+  size?: string | number;
   material?: string;
   description?: string;
   image_url: string;

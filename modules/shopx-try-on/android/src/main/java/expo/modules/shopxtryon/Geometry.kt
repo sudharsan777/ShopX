@@ -42,31 +42,38 @@ internal data class Fit(
   val images: List<String>,
   val width: Float,
   val drop: Float = 0f,
-  val height: Float = 0f
+  val height: Float = 0f,
+  val mesh: String? = null
 )
 
 internal val fits = mapOf(
   78 to Fit(Mode.EARRINGS, listOf("earring-left.png", "earring-right.png"), width = .23f, drop = .03f),
   70 to Fit(Mode.NECKLACE, listOf("necklace.png"), width = .73f, drop = .075f, height = .51f),
   90 to Fit(Mode.RING, listOf("ring.png"), width = 1.66f, drop = .26f, height = 1.16f),
-  -1 to Fit(Mode.BRACELET, emptyList(), width = 0f)
+  -1 to Fit(Mode.BRACELET, emptyList(), width = 0f, mesh = "gold-oval-bracelet.glb"),
+  -2 to Fit(Mode.BRACELET, emptyList(), width = 0f, mesh = "silver-filigree-bracelet.glb"),
+  -3 to Fit(Mode.BRACELET, emptyList(), width = 0f, mesh = "emerald-vine-gold-bracelet.glb")
 )
 
 // Every model sees the same upright viewport crop. PreviewView fills this viewport and
 // CameraX mirrors only its front-facing preview. Perform that mirror here exactly once.
 internal class PreviewTransform(
-  frameWidth: Int, frameHeight: Int,
-  private val width: Int, private val height: Int, mirror: Boolean
+  private val frameWidth: Int, private val frameHeight: Int,
+  private val width: Int, private val height: Int, private val mirror: Boolean,
+  private val cropLeft: Float = 0f, private val cropTop: Float = 0f,
+  private val cropWidth: Float = frameWidth.toFloat(), private val cropHeight: Float = frameHeight.toFloat()
 ) {
-  private val scale = max(width.toFloat() / frameWidth, height.toFloat() / frameHeight)
-  private val scaledWidth = frameWidth * scale
-  private val scaledHeight = frameHeight * scale
-  private val mirrorX = mirror
+  private val scale = max(width / cropWidth, height / cropHeight)
+  private val scaledWidth = cropWidth * scale
+  private val scaledHeight = cropHeight * scale
 
-  fun point(p: NormalizedLandmark): Point = Point(
-    (if (mirrorX) 1f - p.x() else p.x()) * scaledWidth + (width - scaledWidth) / 2,
-    p.y() * scaledHeight + (height - scaledHeight) / 2
-  )
+  fun point(p: NormalizedLandmark): Point {
+    val imageX = (p.x() * frameWidth - cropLeft) * scale
+    return Point(
+      (if (mirror) scaledWidth - imageX else imageX) + (width - scaledWidth) / 2,
+      (p.y() * frameHeight - cropTop) * scale + (height - scaledHeight) / 2
+    )
+  }
 
   fun visible(p: Point) = p.x in 0f..width.toFloat() && p.y in 0f..height.toFloat()
 }

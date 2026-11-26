@@ -1,15 +1,28 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react';
 import axios from 'axios';
 
+import { useSession } from '@/components/auth/SessionProvider';
 import { env } from '@/app/config/env';
 import type { CatalogProduct } from '@/types/catalog.types';
 
 const productsClient = axios.create({ timeout: 15000, headers: { Authorization: null } });
 
+export async function fetchProduct(id: number, signal: AbortSignal) {
+  const endpoint = env.PRODUCTS_API_URL;
+  if (!endpoint) throw new Error('Product API is not configured');
+  const { data } = await productsClient.get<CatalogProduct>(
+    `${endpoint.replace(/\/+$/, '')}/${id}/`, { signal },
+  );
+  if (data?.id !== id) throw new Error('Invalid product response');
+  return data;
+}
+
 type RequestState = 'loading' | 'refreshing' | 'ready' | 'error';
 
 type Catalog = {
   products: CatalogProduct[];
+  favorites: readonly number[];
+  toggleFavorite: (id: number) => void;
   requestState: RequestState;
   loadProducts: (refresh?: boolean) => Promise<void>;
 };
@@ -17,6 +30,8 @@ type Catalog = {
 const CatalogContext = createContext<Catalog | null>(null);
 
 export function CatalogProvider({ children }: PropsWithChildren) {
+  const { accessToken } = useSession();
+  const [favorites, setFavorites] = useState<number[]>([]);
   const [products, setProducts] = useState<CatalogProduct[]>([]);
   const [requestState, setRequestState] = useState<RequestState>('loading');
   const activeRequest = useRef<AbortController | null>(null);
@@ -46,16 +61,22 @@ export function CatalogProvider({ children }: PropsWithChildren) {
   }, []);
 
   useEffect(() => {
+    if (!accessToken) {
+      setFavorites([]);
+      setProducts([]);
+      setRequestState('loading');
+      return;
+    }
     void loadProducts();
 
     return () => {
       activeRequest.current?.abort();
       activeRequest.current = null;
     };
-  }, [loadProducts]);
+  }, [accessToken, loadProducts]);
 
   return (
-    <CatalogContext.Provider value={{ products, requestState, loadProducts }}>
+    <CatalogContext.Provider value={{ products, requestState, loadProducts, favorites, toggleFavorite: id => setFavorites(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]) }}>
       {children}
     </CatalogContext.Provider>
   );

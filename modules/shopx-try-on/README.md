@@ -26,7 +26,7 @@ Face, pose lite, and hand MediaPipe model bundles are included in the Android as
 
 ### Bracelet model
 
-Bracelets includes the supplied `gold-oval-bracelet.glb` as a local accessory, independent of the catalog. The Android renderer reads the mesh directly. Hand world landmarks orient the bangle, while projected wrist and knuckle landmarks set the location and scale. The renderer clips the portion behind the estimated wrist and interpolates between tracking samples. Bracelet mode defaults to the rear camera and also supports the front camera.
+Bracelets includes the supplied gold oval, silver filigree, and emerald vine gold models as local accessories. The silver and emerald models use simplified runtime meshes that retain the source material colors and separate details. The Android renderer reads the mesh directly. Hand world landmarks orient the bangle, while projected wrist and knuckle landmarks set the location and scale. The renderer clips the portion behind the estimated wrist and interpolates between tracking samples. The last valid wrist fit remains visible for up to 650 ms through brief detector gaps, then clears if tracking is still lost. Bracelet mode defaults to the rear camera and also supports the front camera.
 
 ## Physical device checks
 

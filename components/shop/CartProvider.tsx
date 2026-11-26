@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, type PropsWithChildren } from 'react';
+import React, { createContext, useContext, useEffect, useState, type PropsWithChildren } from 'react';
 
+import { useSession } from '@/components/auth/SessionProvider';
 import type { CatalogProduct } from '@/types/catalog.types';
 
 type CartLine = { product: CatalogProduct; quantity: number };
@@ -8,23 +9,38 @@ type Cart = {
   lines: CartLine[];
   count: number;
   subtotal: number;
-  add: (product: CatalogProduct) => void;
+  add: (product: CatalogProduct, quantity?: number) => void;
   decrease: (id: number) => void;
   remove: (id: number) => void;
 };
 
 const CartContext = createContext<Cart | null>(null);
 
+export function stockLimit(product: CatalogProduct): number {
+  if (product.is_active === false || product.in_stock === false) return 0;
+  return typeof product.stock === 'number' && Number.isFinite(product.stock)
+    ? Math.max(0, Math.floor(product.stock)) : Infinity;
+}
+
 export function CartProvider({ children }: PropsWithChildren) {
+  const { accessToken } = useSession();
   const [lines, setLines] = useState<CartLine[]>([]);
 
-  const add = (product: CatalogProduct) => {
+  useEffect(() => {
+    if (!accessToken) setLines([]);
+  }, [accessToken]);
+
+  const add = (product: CatalogProduct, requested = 1) => {
+    if (!Number.isSafeInteger(requested) || requested < 1) return;
     setLines(current => {
       const existing = current.find(line => line.product.id === product.id);
-      if (!existing) return [...current, { product, quantity: 1 }];
+      const currentQuantity = existing?.quantity ?? 0;
+      const quantity = Math.min(stockLimit(product), currentQuantity + requested);
+      if (quantity <= currentQuantity) return current;
+      if (!existing) return [...current, { product, quantity }];
 
       return current.map(line =>
-        line === existing ? { product, quantity: line.quantity + 1 } : line,
+        line === existing ? { product, quantity } : line,
       );
     });
   };

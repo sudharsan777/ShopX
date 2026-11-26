@@ -29,6 +29,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
@@ -36,7 +37,10 @@ import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   var active = false
@@ -51,7 +55,7 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
   private val overlay = JewelryOverlay(context)
   private val worker = Executors.newSingleThreadExecutor()
   private val bitmaps = mutableMapOf<String, Bitmap>()
-  private val bracelet by lazy { BraceletMesh.load(context.applicationContext) }
+  private val braceletMeshes = mutableMapOf<String, BraceletMesh>()
   private var provider: ProcessCameraProvider? = null
   private var analysis: ImageAnalysis? = null
   private var preview: Preview? = null
@@ -60,7 +64,9 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
   private var disposed = false
   private var layoutQueued = false
 
-  private data class Configuration(val front: Boolean, val id: Int, val width: Int, val height: Int)
+  private data class Configuration(
+    val front: Boolean, val id: Int, val width: Int, val height: Int, val rotation: Int
+  )
   private var configuration: Configuration? = null
 
   init {
@@ -122,8 +128,19 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
       return
     }
     if (previewView.width == 0 || previewView.height == 0) return
-    val desired = Configuration(front, productId, previewView.width, previewView.height)
-    if (configuration == desired) return
+    val rotation = previewView.display?.rotation ?: return
+    val desired = Configuration(front, productId, previewView.width, previewView.height, rotation)
+    val previous = configuration
+    if (previous == desired) return
+    if (previous?.copy(id = desired.id) == desired && analysis != null &&
+      fits[previous.id]?.mode == Mode.BRACELET && fits[desired.id]?.mode == Mode.BRACELET) {
+      overlay.swapBracelet(loadBracelet(fits.getValue(desired.id).mesh!!))
+      configuration = desired
+      // The picker resets its message after a selection; report the current
+      // session status even though the wrist lock itself did not change.
+      if (status.isNotEmpty()) onTrackingStatus(mapOf("status" to status))
+      return
+    }
     stopCamera()
     configuration = desired
     val current = generation
@@ -145,10 +162,13 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
     }, ContextCompat.getMainExecutor(context))
   }
 
+  private fun loadBracelet(file: String) =
+    braceletMeshes.getOrPut(file) { BraceletMesh.load(context.applicationContext, file) }
+
   private fun bindCamera(camera: ProcessCameraProvider, config: Configuration, current: Int) {
     val owner = appContext.currentActivity as? LifecycleOwner ?: error("Missing camera lifecycle")
     val viewport = previewView.viewPort ?: error("Missing preview viewport")
-    val rotation = previewView.display.rotation
+    val rotation = config.rotation
     val selector = if (config.front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
     if (!camera.hasCamera(selector)) {
       publish("noCamera")
@@ -161,14 +181,18 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
           ?: error("Invalid overlay")
       }
     }
-    overlay.configure(bitmaps, fit.mode, if (fit.mode == Mode.BRACELET) bracelet else null)
+    val bracelet = fit.mesh?.let(::loadBracelet)
+    overlay.configure(bitmaps, fit.mode, bracelet)
+    val wristMode = fit.mode == Mode.BRACELET
+    val handResolution = if (wristMode) Size(480, 360) else Size(640, 480)
     val cameraPreview = Preview.Builder().setTargetRotation(rotation).build()
     cameraPreview.surfaceProvider = previewView.surfaceProvider
     val cameraAnalysis = ImageAnalysis.Builder()
       .setTargetRotation(rotation)
       .setResolutionSelector(
         ResolutionSelector.Builder()
-          .setResolutionStrategy(ResolutionStrategy(Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+          .setResolutionStrategy(ResolutionStrategy(handResolution, if (wristMode) ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+            else ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
           .build()
       )
       .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -181,13 +205,22 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
       .addUseCase(cameraPreview).addUseCase(cameraAnalysis).build()
     camera.bindToLifecycle(owner, selector, cases)
     currentTracker = tracker
-    val startedAt = SystemClock.uptimeMillis()
+    val wristInbox = if (wristMode) WristInbox(
+      this, { current == generation }, overlay::showWrist
+    ) else null
+    if (wristMode) {
+      overlay.onWristStatus = { locked -> publish(if (locked) "tracking" else "searching") }
+      Log.i(WRIST_TAG, "session=$current lens=${if (config.front) "front" else "rear"} " +
+        "viewport=${config.width}x${config.height} displayRotation=$rotation model=${fit.mesh}")
+    }
     cameraAnalysis.setAnalyzer(worker) { frame ->
       try {
         if (current == generation) {
           val sample = tracker.analyze(frame)
-          if (sample != null) {
-            // Rendering and smoothing are native. JS only receives status transitions.
+          val wrist = sample?.wrist
+          if (wrist != null) {
+            wristInbox?.offer(wrist)
+          } else if (sample != null) {
             post {
               if (current == generation && SystemClock.uptimeMillis() - sample.time <= TRACKING_TIMEOUT) {
                 overlay.show(sample)
@@ -209,9 +242,9 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
         frame.close()
       }
     }
-    overlay.onTimeout = { publish("searching") }
+    if (!wristMode) overlay.onTimeout = { publish("searching") }
     postDelayed({
-      if (current == generation && status == "starting" && SystemClock.uptimeMillis() - startedAt >= 5000) {
+      if (current == generation && status == "starting") {
         stopCamera()
         publish("cameraError")
       }
@@ -236,16 +269,86 @@ internal class TryOnView(context: Context, appContext: AppContext) : ExpoView(co
     configuration = null
     status = ""
     overlay.onTimeout = null
+    overlay.onWristStatus = null
     overlay.clear()
     unbindCamera()
   }
 }
 
 private const val TRACKING_TIMEOUT = 340L
+private const val WRIST_TAG = "ShopXWrist"
+// A retry can replace the native view while its old task finishes.
+private val wristInferenceInFlight = AtomicBoolean(false)
+
 private data class Sample(
-  val time: Long, val placements: List<Placement?>, val identity: String = "", val wrist: WristPose? = null
+  val time: Long, val placements: List<Placement?>, val identity: String = "", val wrist: WristFrame? = null
 ) {
-  val tracked get() = wrist != null || placements.any { it != null }
+  val tracked get() = placements.any { it != null }
+}
+
+// Only one delivery can be pending. A newer result replaces any frame waiting
+// on the UI thread, and a camera generation can never affect its replacement.
+private class WristInbox(
+  private val view: View, private val active: () -> Boolean, private val consume: (WristFrame) -> Unit
+) {
+  private val latest = AtomicReference<WristFrame?>()
+  private val scheduled = AtomicBoolean(false)
+  private val drain = Runnable {
+    val next = latest.getAndSet(null)
+    if (next != null && active()) consume(next)
+    scheduled.set(false)
+    if (latest.get() != null) schedule()
+  }
+  fun offer(frame: WristFrame) {
+    latest.set(frame)
+    schedule()
+  }
+  private fun schedule() {
+    if (scheduled.compareAndSet(false, true)) view.post(drain)
+  }
+}
+
+private class WristDiagnostics {
+  private var since = -1L
+  private var frames = 0
+  private var fitted = 0
+  private var detected = 0
+  private var inferenceTotal = 0L
+  private var inferenceMax = 0L
+  private var latencyMax = 0L
+  private val reasons = linkedMapOf<String, Int>()
+  private val rejected = linkedMapOf<String, Int>()
+
+  fun frame(frame: WristFrame, inferenceMs: Long, rotation: Int, width: Int, height: Int, delegate: Delegate) {
+    if (since < 0) since = frame.completed
+    frames++
+    if (frame.fit.pose != null) fitted++
+    if (frame.fit.reason != "no_hand_detected") detected++
+    inferenceTotal += inferenceMs
+    inferenceMax = maxOf(inferenceMax, inferenceMs)
+    latencyMax = maxOf(latencyMax, frame.completed - frame.captured)
+    reasons.merge(frame.fit.reason, 1, Int::plus)
+    frame.fit.rejected.forEach { rejected.merge(it, 1, Int::plus) }
+    val elapsed = frame.completed - since
+    if (elapsed < 2000) return
+    Log.i(WRIST_TAG, String.format(Locale.US,
+      "inferenceFps=%.1f detectionFps=%.1f fittedFps=%.1f inferenceMsAvg=%.1f inferenceMsMax=%d " +
+        "pipelineMsMax=%d wristConfidence=%s palmPoints=%d handedness=%s rawHandednessScore=%s " +
+        "input=%dx%d rotation=%d delegate=%s fitReasons=%s rejectedLandmarks=%s",
+      frames * 1000.0 / elapsed, detected * 1000.0 / elapsed, fitted * 1000.0 / elapsed, inferenceTotal.toDouble() / frames,
+      inferenceMax, latencyMax, frame.fit.wristConfidence ?: "not_reported",
+      frame.fit.palmCount, frame.side ?: "not_reported", frame.sideConfidence ?: "not_reported",
+      width, height, rotation, delegate, reasons, rejected))
+    since = frame.completed
+    frames = 0
+    fitted = 0
+    detected = 0
+    inferenceTotal = 0
+    inferenceMax = 0
+    latencyMax = 0
+    reasons.clear()
+    rejected.clear()
+  }
 }
 
 private class Tracker(
@@ -258,6 +361,10 @@ private class Tracker(
 ) {
   private val aspects = bitmaps.map { it.width.toFloat() / it.height }
   private var lastFrame = -1000L
+  private var lastVideoTimestamp = -1L
+  private var lastWrist: Pair<Long, WristPose>? = null
+  private val wristDiagnostics = WristDiagnostics()
+  private val wristMode = fit.mode == Mode.BRACELET
   private var face: FaceLandmarker? = null
   private var pose: PoseLandmarker? = null
   private var hand: HandLandmarker? = null
@@ -275,29 +382,77 @@ private class Tracker(
       .setMinPoseDetectionConfidence(.65f).setMinPosePresenceConfidence(.65f)
       .setMinTrackingConfidence(.65f).setNumPoses(1).build()
   ).also { pose = it }
+  private val handConfidence = if (wristMode) .45f else .65f
+  private var stableSide: String? = null
+  private var sideCandidate: String? = null
+  private var sideSamples = 0
+
   private fun handModel() = hand ?: HandLandmarker.createFromOptions(context,
     HandLandmarker.HandLandmarkerOptions.builder()
-      .setBaseOptions(base("hand_landmarker")).setRunningMode(RunningMode.VIDEO)
-      .setMinHandDetectionConfidence(.65f).setMinHandPresenceConfidence(.65f)
-      .setMinTrackingConfidence(.65f).setNumHands(1).build()
+      .setBaseOptions(BaseOptions.builder().setModelAssetPath("tryon/hand_landmarker.task")
+        .setDelegate(Delegate.CPU).build())
+      .setRunningMode(RunningMode.VIDEO)
+      .setMinHandDetectionConfidence(handConfidence).setMinHandPresenceConfidence(handConfidence)
+      .setMinTrackingConfidence(handConfidence).setNumHands(1).build()
   ).also { hand = it }
 
+  private fun updateSide(observed: String?, confidence: Float?): String? {
+    if (observed == null || confidence == null || confidence < .70f) return stableSide
+    if (sideCandidate != observed) {
+      sideCandidate = observed
+      sideSamples = 1
+    } else if (sideSamples < 3) sideSamples++
+    if (sideSamples >= 3) stableSide = sideCandidate
+    return stableSide
+  }
+
   fun analyze(frame: ImageProxy): Sample? {
+    if (!wristMode) return analyzeFrame(frame)
+    if (!wristInferenceInFlight.compareAndSet(false, true)) return null
+    return try {
+      analyzeFrame(frame)
+    } finally {
+      wristInferenceInFlight.set(false)
+    }
+  }
+
+  private fun analyzeFrame(frame: ImageProxy): Sample? {
     val now = SystemClock.uptimeMillis()
-    val frameInterval = if (fit.mode == Mode.BRACELET) 65L else 92L
+    val frameInterval = if (wristMode) 65L else 92L
     if (now - lastFrame < frameInterval) return null
     lastFrame = now
 
     val buffer = frame.toBitmap()
     val crop = frame.cropRect
-    val matrix = Matrix().apply { postRotate(frame.imageInfo.rotationDegrees.toFloat()) }
+    val rotation = frame.imageInfo.rotationDegrees
+    val matrix = Matrix().apply {
+      if (wristMode) {
+        val scale = (320f / maxOf(buffer.width, buffer.height)).coerceAtMost(1f)
+        postScale(scale, scale)
+      }
+      postRotate(rotation.toFloat())
+    }
     var upright: Bitmap? = null
     var image: MPImage? = null
     try {
-      val bitmap = Bitmap.createBitmap(buffer, crop.left, crop.top, crop.width(), crop.height(), matrix, true)
+      // Give the hand detector the full analysis image. Only the preview
+      // is cropped; edge knuckles still supply context outside that crop.
+      val bitmap = if (wristMode) {
+        Bitmap.createBitmap(buffer, 0, 0, buffer.width, buffer.height, matrix, true)
+      } else Bitmap.createBitmap(buffer, crop.left, crop.top, crop.width(), crop.height(), matrix, true)
       upright = bitmap
       image = BitmapImageBuilder(bitmap).build()
-      val transform = PreviewTransform(bitmap.width, bitmap.height, width, height, front)
+      val transform = if (wristMode) {
+        val full = RectF(0f, 0f, buffer.width.toFloat(), buffer.height.toFloat())
+        val visible = RectF(crop)
+        matrix.mapRect(full)
+        matrix.mapRect(visible)
+        val xScale = bitmap.width / full.width()
+        val yScale = bitmap.height / full.height()
+        PreviewTransform(bitmap.width, bitmap.height, width, height, front,
+          (visible.left - full.left) * xScale, (visible.top - full.top) * yScale,
+          visible.width() * xScale, visible.height() * yScale)
+      } else PreviewTransform(bitmap.width, bitmap.height, width, height, front)
       return when (fit.mode) {
         Mode.EARRINGS -> {
           val points = faceModel().detectForVideo(image, now).faceLandmarks().firstOrNull()
@@ -307,15 +462,33 @@ private class Tracker(
           val points = poseModel().detectForVideo(image, now).landmarks().firstOrNull()
           Sample(now, if (points == null) emptyList() else placeNecklace(fit, points, transform))
         }
-        Mode.RING, Mode.BRACELET -> {
+        Mode.BRACELET -> {
+          val timestamp = maxOf(lastVideoTimestamp + 1, frame.imageInfo.timestamp / 1_000_000L)
+          lastVideoTimestamp = timestamp
+          val detector = handModel()
+          val inferenceStarted = SystemClock.uptimeMillis()
+          val result = detector.detectForVideo(image, timestamp)
+          val inferenceMs = SystemClock.uptimeMillis() - inferenceStarted
+          val points = result.landmarks().firstOrNull()
+          val world = result.worldLandmarks().firstOrNull()
+          val side = result.handedness().firstOrNull()?.firstOrNull()
+          val reference = lastWrist?.takeIf { now - it.first < WristTracking.LOSS_MS }?.second
+          val wrist = if (points == null) BraceletFit(reason = "no_hand_detected")
+            else placeBracelet(points, world, transform, front, reference)
+          val completed = SystemClock.uptimeMillis()
+          wrist.pose?.let { lastWrist = completed to it }
+          val stable = updateSide(side?.categoryName(), side?.score())
+          val sample = WristFrame(now, completed, wrist, stable, side?.score())
+          wristDiagnostics.frame(sample, inferenceMs, rotation, bitmap.width, bitmap.height, Delegate.CPU)
+          Sample(now, emptyList(), wrist = sample)
+        }
+        Mode.RING -> {
           val result = handModel().detectForVideo(image, now)
           val points = result.landmarks().firstOrNull()
           val world = result.worldLandmarks().firstOrNull()
           val side = result.handedness().firstOrNull()?.firstOrNull()
           if (points == null || world == null || side == null || side.score() < .65f) Sample(now, emptyList())
-          else if (fit.mode == Mode.BRACELET) {
-            Sample(now, emptyList(), side.categoryName(), placeBracelet(points, world, transform, front))
-          } else Sample(now, placeRing(fit, points, world, transform), side.categoryName())
+          else Sample(now, placeRing(fit, points, world, transform), side.categoryName())
         }
       }
     } finally {
@@ -338,9 +511,11 @@ private class JewelryOverlay(context: Context) : View(context) {
   private var images = emptyList<Bitmap>()
   private var mode = Mode.EARRINGS
   private var bracelet: BraceletMesh? = null
-  private var wrist: WristPose? = null
-  private var wristStart: WristPose? = null
-  private var wristAnimationStart = 0L
+  private var wristTracking = WristTracking()
+  private var lastWristState: WristState? = null
+  private var lastWristVisibility = false
+  private var lastWristLock: Boolean? = null
+  var onWristStatus: ((Boolean) -> Unit)? = null
   private var placements = emptyList<Placement?>()
   private var identity = ""
   private var updated = 0L
@@ -362,13 +537,46 @@ private class JewelryOverlay(context: Context) : View(context) {
     clear()
   }
 
+  fun swapBracelet(mesh: BraceletMesh) {
+    bracelet = mesh
+    invalidate()
+  }
+
+  private val wristTick = Runnable { updateWrist() }
+
+  fun showWrist(frame: WristFrame) {
+    val now = SystemClock.uptimeMillis()
+    // The display clock, not rejected samples, owns the expiry decision.
+    val displayChanged = wristTracking.tick(now)
+    wristTracking.observe(frame, now)
+    updateWrist(displayChanged)
+  }
+
+  private fun updateWrist(displayChanged: Boolean = false) {
+    val changed = wristTracking.tick(SystemClock.uptimeMillis())
+    val state = wristTracking.state
+    val visible = wristTracking.visible
+    val locked = wristTracking.hasLock
+    if (state != lastWristState || visible != lastWristVisibility) {
+      Log.i(WRIST_TAG, "state=$state modelMounted=${bracelet != null} modelVisible=$visible " +
+        "reason=${wristTracking.reason}")
+      lastWristState = state
+      lastWristVisibility = visible
+    }
+    if (locked != lastWristLock) {
+      lastWristLock = locked
+      onWristStatus?.invoke(locked)
+    }
+    // The first tick in showWrist can also advance the display. A pending
+    // vsync is always replaced, so there is only one owner of visibility.
+    if (changed || displayChanged) invalidate()
+    removeCallbacks(wristTick)
+    if (wristTracking.needsTick) postOnAnimationDelayed(wristTick, 16L)
+  }
+
   fun show(sample: Sample) {
     if (sample.identity != identity || sample.time - updated > TRACKING_TIMEOUT) clear()
     identity = sample.identity
-    val now = SystemClock.uptimeMillis()
-    wristStart = interpolatedWrist(now)
-    wrist = sample.wrist?.blend(wrist)
-    wristAnimationStart = now
     val previous = placements
     placements = sample.placements.mapIndexed { index, placement ->
       placement?.blend(previous.getOrNull(index))
@@ -376,32 +584,33 @@ private class JewelryOverlay(context: Context) : View(context) {
     updated = sample.time
     removeCallbacks(expire)
     if (sample.tracked) {
-      postDelayed(expire, (TRACKING_TIMEOUT - (SystemClock.uptimeMillis() - sample.time)).coerceAtLeast(1L))
+      val remaining = TRACKING_TIMEOUT - (SystemClock.uptimeMillis() - sample.time)
+      postDelayed(expire, remaining.coerceAtLeast(1L))
     }
     invalidate()
   }
 
   fun clear() {
-    wrist = null
-    wristStart = null
+    wristTracking = WristTracking()
+    lastWristState = null
+    lastWristVisibility = false
+    lastWristLock = null
     placements = emptyList()
     identity = ""
     updated = 0
     removeCallbacks(expire)
+    removeCallbacks(wristTick)
     invalidate()
   }
 
-  private fun interpolatedWrist(now: Long): WristPose? =
-    wrist?.blend(wristStart, ((now - wristAnimationStart) / 48f).coerceIn(0f, 1f))
-
   override fun onDraw(canvas: Canvas) {
     super.onDraw(canvas)
-    if (SystemClock.uptimeMillis() - updated > TRACKING_TIMEOUT) return
-    val now = SystemClock.uptimeMillis()
-    interpolatedWrist(now)?.let {
-      bracelet?.draw(canvas, it)
-      if (wristStart != null && now - wristAnimationStart < 48L) postInvalidateOnAnimation()
+    if (mode == Mode.BRACELET) {
+      val pose = wristTracking.pose
+      if (pose != null && wristTracking.visible) bracelet?.draw(canvas, pose, wristTracking.modelAlpha)
+      return
     }
+    if (SystemClock.uptimeMillis() - updated > TRACKING_TIMEOUT) return
     placements.forEachIndexed { index, placement ->
       val image = images.getOrNull(index)
       if (placement == null || image == null) return@forEachIndexed
